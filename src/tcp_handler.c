@@ -5,8 +5,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <signal.h>
 #include "tcp_handler.h"
 #include "program_args.h"
+
+extern volatile sig_atomic_t terminate;
 
 void* tcp_handler(void* args)
 {
@@ -14,8 +17,13 @@ void* tcp_handler(void* args)
     int sockfd;
     struct sockaddr_in servaddr;
     FILE* log_file = fopen(pargs->log_file, "a");
+    if (log_file == NULL)
+    {
+        fprintf(stderr, "Failed to open log file\n");
+        return NULL;
+    }
 
-    while (1)
+    while (!terminate)
     {
         sockfd = socket(AF_INET, SOCK_STREAM, 0);
         if (sockfd == -1)
@@ -38,16 +46,21 @@ void* tcp_handler(void* args)
         {
             fprintf(log_file, "TCP connection failed\n");
             close(sockfd);
+            pthread_mutex_lock(&pargs->lock);
             pargs->tcp_connected = 0;
+            pargs->tcp_sockfd = -1;
+            pthread_mutex_unlock(&pargs->lock);
             sleep(1);
             continue;
         }
 
         fprintf(log_file, "TCP connection established\n");
+        pthread_mutex_lock(&pargs->lock);
         pargs->tcp_sockfd = sockfd;
         pargs->tcp_connected = 1;
+        pthread_mutex_unlock(&pargs->lock);
 
-        while (1)
+        while (!terminate)
         {
             char data[132];
             ssize_t bytes_received = recv(sockfd, data, sizeof(data), 0);
@@ -57,11 +70,21 @@ void* tcp_handler(void* args)
                 break;
             }
 
-            // Ignore any data received from the TCP server
+            fprintf(log_file, "Received data from TCP server (ignored)\n");
         }
 
         close(sockfd);
+        pthread_mutex_lock(&pargs->lock);
         pargs->tcp_connected = 0;
+        pargs->tcp_sockfd = -1;
+        pthread_mutex_unlock(&pargs->lock);
+
+        pthread_mutex_lock(&pargs->lock);
+        int should_terminate = terminate;
+        pthread_mutex_unlock(&pargs->lock);
+        
+        if (should_terminate)
+            break;
     }
 
     fclose(log_file);
